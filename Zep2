@@ -1,0 +1,494 @@
+
+
+Exploration des donnees GDELT via Spark
+
+Dans ce notebook nous allons commencer a explorer les donnees GDELT qu'on a stockées sur S3
+Conf Spark et AWS, classes SCALA
+
+// %spark.dep : Commande magic de déclaration de dépendance dans une cellue et non l'interp., avant zeppelin(0.9.0)
+
+import com.mongodb.client.{MongoClient, MongoDatabase}
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.SparkSession
+import com.mongodb.spark.MongoSpark
+import org.bson.Document
+import com.mongodb.spark._
+import com.mongodb.spark.config.ReadConfig
+import org.bson.codecs.configuration.CodecRegistries.{fromProviders, fromRegistries}
+import com.mongodb.spark.config._
+
+val sparkConf = new SparkConf().setAll(Map(
+      "spark.master" -> "local",
+      "spark.scheduler.mode" -> "FIFO",
+      "spark.speculation" -> "false",
+      "spark.reducer.maxSizeInFlight" -> "48m",
+      "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer",
+      "spark.kryoserializer.buffer.max" -> "1g",
+      "spark.shuffle.file.buffer" -> "32k",
+      "spark.default.parallelism" -> "12",
+      "spark.sql.shuffle.partitions" -> "12",
+      "spark.mongodb.input.uri" -> "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.COLLtest",
+      "spark.mongodb.output.uri" -> "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.COLLtest"
+    ))
+
+val spark = SparkSession.builder()
+      .appName("MongoSparkConnectorIntro")
+      .config(sparkConf)
+      .config("spark.mongodb.input.uri","mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.COLLtest") // redondant mais pour mémoire conf possible ici
+      .config("spark.mongodb.output.uri","mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.COLLtest")
+      .getOrCreate()
+
+import com.amazonaws.services.s3.AmazonS3Client
+import com.amazonaws.auth.BasicSessionCredentials
+    
+    
+val AWS_ID = "ASIAQFYNH7PYXZDPLQN4"
+val AWS_KEY = "VH8c1djkzD7f3eobdIULgw8/Lbuf/P3KehjcsI4q"
+val AWS_SESSION_KEY = "FwoGZXIvYXdzEPT//////////wEaDMr/wo9zlBbaPMoILSLQAUdm8ApuIxWsqYSs9MRz7QHNu0aTcLGooQOA+MIBQjpa3bhB0cIFZbBN2fXM+FJIAn2zVM4hYIB8NIO3ycEpteGBottEylq8kT6aHfKLzyGVzI9A2+eG8yJPrcwDyk6NNL0TrIn7kdYvgxb5H5sMjkFkkhxpo1R8ilqzBirDE3jnJLaXovxiFuLm8uBOQfJZFTU+yVg5bEsu+18Dq00Ltl/u6gZVJJOxs3KIlo0O9SQPQ0nh71hPyxiVoBx0b5DwDwOrmNWx998G4BrvElGY4n0o1MaqgAYyLfE3mQev4e2KufIjESSRpOjSSxpxbYRhvtz3buGFJba2h2oGWQdCV2C3AvUk8g=="
+
+// la classe AmazonS3Client n'est pas serializable
+// on rajoute l'annotation @transient pour dire a Spark de ne pas essayer de serialiser cette classe et l'envoyer aux executeurs
+@transient val awsClient = new AmazonS3Client(new BasicSessionCredentials(AWS_ID, AWS_KEY, AWS_SESSION_KEY))
+
+sc.hadoopConfiguration.set("fs.s3a.access.key", AWS_ID) // mettre votre ID du fichier credentials.csv
+sc.hadoopConfiguration.set("fs.s3a.secret.key", AWS_KEY) // mettre votre secret du fichier credentials.csv
+sc.hadoopConfiguration.set("fs.s3a.session.token",AWS_SESSION_KEY)
+
+On utilise des case class et un schéma/format de spark mongo pour la gestion des schémas, ainsi que (plus bas) des encoders. A noter que ce code a été délicat à mettre en place, mais est a priori le plus concis. A noter les erreurs de types de datas sur la BigTable de GDELT !
+
+case class Mention(GLOBALEVENTID: BigInt,
+                    EventTimeDate: BigInt,
+                    MentionTimeDate: BigInt,
+                    MentionType: Int,
+                    MentionSourceName: String,
+                    MentionIdentifier: String, 
+                    SentenceID: Int, 
+                    Actor1CharOffset: Double, 
+                    Actor2CharOffset: Double,
+                    ActionCharOffset: Double,
+                    InRawText: Int,
+                    Confidence: Int,
+                    MentionDocLen: Int,
+                    MentionDocTone: Double,
+                    MentionDocTranslationInfo: String,
+                    Extras: String
+                    )
+
+case class Event(GLOBALEVENTID: Int,
+                   SQLDATE: Int,
+                   MonthYear: Int,
+                   Year: Int,
+                   FractionDate: Double,
+                   Actor1Code: String,
+                   Actor1Name: String,
+                   Actor1CountryCode: String,
+                   Actor1KnownGroupCode: String,
+                   Actor1EthnicCode: String,
+                   Actor1Religion1Code: String,
+                   Actor1Religion2Code: String,
+                   Actor1Type1Code: String,
+                   Actor1Type2Code: String,
+                   Actor1Type3Code: String,
+                   Actor2Code: String,
+                   Actor2Name: String,
+                   Actor2CountryCode: String,
+                   Actor2KnownGroupCode: String,
+                   Actor2EthnicCode: String,
+                   Actor2Religion1Code: String,
+                   Actor2Religion2Code: String,
+                   Actor2Type1Code: String,
+                   Actor2Type2Code: String,
+                   Actor2Type3Code: String,
+                   IsRootEvent: Int,
+                   EventCode: String,
+                   EventBaseCode: String,
+                   EventRootCode: String,
+                   QuadClass: Int,
+                   GoldsteinScale: Double,
+                   NumMentions: Int,
+                   NumSources: Int,
+                   NumArticles: Int,
+                   AvgTone: Double,
+                   Actor1Geo_Type: Int,
+                   Actor1Geo_FullName: String,
+                   Actor1Geo_CountryCode: String,
+                   Actor1Geo_ADM1Code: String,
+                   Actor1Geo_ADM2Code: String,
+                   Actor1Geo_Lat: Double,
+                   Actor1Geo_Long: Double,
+                   Actor1Geo_FeatureID: String,
+                   Actor2Geo_Type: Int,
+                   Actor2Geo_FullName: String,
+                   Actor2Geo_CountryCode: String,
+                   Actor2Geo_ADM1Code: String,
+                   Actor2Geo_ADM2Code: String,
+                   Actor2Geo_Lat: Double,
+                   Actor2Geo_Long: Double,
+                   Actor2Geo_FeatureID: String,
+                   ActionGeo_Type: Int,
+                   ActionGeo_FullName: String,
+                   ActionGeo_CountryCode: String,
+                   ActionGeo_ADM1Code: String,
+                   ActionGeo_ADM2Code: String,
+                   ActionGeo_Lat: Double,
+                   ActionGeo_Long: Double,
+                   ActionGeo_FeatureID: String,
+                   DATEADDED: BigInt,
+                   SOURCEURL: String)
+
+case class GkG(
+    GKGRECORDID: String,
+    DATE: BigInt,
+    SourceCollectionIdentifier: Int,
+    SourceCommonName: String,
+    DocumentIdentifier: String,
+    Counts: String,
+    V2Counts: String,
+    Themes: String,
+    V2Themes: String,
+    Locations: String,
+    V2Locations: String,
+    Persons: String,
+    V2Persons: String,
+    Organizations: String,
+    V2Organizations: String,
+    V2Tone: String,
+    Dates: String,
+    GCAM: String,
+    SharingImage: String,
+    RelatedImages: String,
+    SocialImageEmbeds: String,
+    SocialVideoEmbeds: String,
+    Quotations: String,
+    AllNames: String,
+    Amounts: String,
+    TranslationInfo: String,
+    Extras: String,
+    Year: Int,
+    Month: Int,
+    Day: Int)
+
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.Encoders
+
+val encoderSchemaEvent = Encoders.product[Event].schema 
+encoderSchemaEvent.printTreeString()
+
+val encoderSchemaMention = Encoders.product[Mention].schema 
+encoderSchemaMention.printTreeString()
+
+val encoderSchemaGkG = Encoders.product[GkG].schema 
+encoderSchemaGkG.printTreeString()
+
+//val encoderSchemaEventTrans = Encoders.product[EventTrans].schema 
+//encoderSchemaEventTrans.printTreeString()
+
+//val encoderSchemaMentionTrans = Encoders.product[MentionTrans].schema 
+//encoderSchemaMentionTrans.printTreeString()
+
+Mentions et events traduits inférés avec un objet Structype (variante de la solution case class ci-dessus, juste pour mémoire)
+
+val schemaEventTrans =  StructType(
+    Seq(
+    StructField(name = "EventId", dataType = DoubleType, nullable = false),
+      StructField(name = "Day", dataType = DoubleType, nullable = false),
+      StructField(name = "MonthYear", dataType = DoubleType, nullable = false),
+      StructField(name = "Year", dataType = DoubleType, nullable = false),
+      StructField(name = "FractionDate", dataType = DoubleType, nullable = false),
+
+      StructField(name = "Actor1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Name", dataType = StringType, nullable = true),
+      StructField(name = "Actor1CountryCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor1KnownGroupCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor1EthnicCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Religion1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Religion2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Type1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Type2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Type3Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Name", dataType = StringType, nullable = true),
+      StructField(name = "Actor2CountryCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor2KnownGroupCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor2EthnicCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Religion1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Religion2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Type1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Type2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Type3Code", dataType = StringType, nullable = true),
+      
+      StructField(name = "IsRootEvent", dataType = DoubleType, nullable = false),
+      StructField(name = "EventCode", dataType = DoubleType, nullable = false),
+      StructField(name = "EventBaseCode", dataType = DoubleType, nullable = false),
+      StructField(name = "EventRootCode", dataType = DoubleType, nullable = false),
+      StructField(name = "QuadClass", dataType = DoubleType, nullable = false),
+      StructField(name = "GoldsteinScale", dataType = DoubleType, nullable = false),
+      StructField(name = "NumMentions", dataType = DoubleType, nullable = false),
+      StructField(name = "NumSources", dataType = DoubleType, nullable = false),
+      StructField(name = "NumArticles", dataType = DoubleType, nullable = false),
+      StructField(name = "AvgTone", dataType = DoubleType, nullable = false),
+      StructField(name = "Actor1Geo_Type", dataType = DoubleType, nullable = false),
+      
+      StructField(name = "Actor1Geo_FullName", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Geo_CountryCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Geo_ADM1Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor1Geo_ADM2Code", dataType = StringType, nullable = true),
+      
+      
+      
+      StructField(name = "Actor1Geo_Lat", dataType = DoubleType, nullable = false),
+      StructField(name = "Actor1Geo_Long", dataType = DoubleType, nullable = false),
+      StructField(name = "Actor1Geo_FeatureID", dataType =  StringType, nullable = true),
+     
+      StructField(name = "Actor2Geo_Type", dataType = IntegerType, nullable = false),
+      StructField(name = "Actor2Geo_FullName", dataType = StringType, nullable = true),
+      
+      
+      
+      StructField(name = "Actor2Geo_CountryCode", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Geo_ADM1Code", dataType = StringType, nullable = true),
+      
+      StructField(name = "Actor2Geo_ADM2Code", dataType = StringType, nullable = true),
+      StructField(name = "Actor2Geo_Lat", dataType = DoubleType, nullable = false),
+      
+      
+      
+      StructField(name = "Actor2Geo_Long", dataType = DoubleType, nullable = false),
+      StructField(name = "Actor2Geo_FeatureID", dataType = StringType, nullable = true),
+      
+      StructField(name = "ActionGeo_Type", dataType = DoubleType, nullable = false),
+      StructField(name = "ActionGeo_FullName", dataType = StringType, nullable = true),
+      StructField(name = "ActionGeo_CountryCode", dataType = StringType, nullable = true),
+      StructField(name = "ActionGeo_ADM1Code", dataType = StringType, nullable = true),
+      
+      StructField(name = "ActionGeo_ADM2Code", dataType = StringType, nullable = true),
+      StructField(name = "ActionGeo_Lat", dataType = DoubleType, nullable = false),
+      
+      
+      StructField(name = "ActionGeo_Long", dataType = DoubleType, nullable = false),
+      StructField(name = "ActionGeo_FeatureID", dataType = StringType, nullable = true),
+      StructField(name = "DATEADDED", dataType = DoubleType, nullable = false),
+      StructField(name = "SOURCEURL", dataType = StringType, nullable = true)
+    )
+  )
+
+val schemaMentionTrans =  StructType(
+    Seq(
+      StructField(name = "GlobalEventID", dataType = DoubleType, nullable = false),
+      StructField(name = "EventTimeDate", dataType = DoubleType, nullable = false),
+      StructField(name = "MentionTimeDate", dataType = DoubleType, nullable = false),
+      StructField(name = "MentionType", dataType = IntegerType, nullable = false),
+      StructField(name = "MentionSourceName", dataType = StringType, nullable = true),
+      StructField(name = "MentionIdentifier", dataType = StringType, nullable = true),
+      StructField(name = "SentenceID", dataType = IntegerType, nullable = false),
+      StructField(name = "Actor1CharOffset", dataType = IntegerType, nullable = false),
+      StructField(name = "Actor2CharOffset", dataType = DoubleType, nullable = false),
+      StructField(name = "ActionCharOffset", dataType = IntegerType, nullable = false),
+      StructField(name = "InRawText", dataType = DoubleType, nullable = false),
+      StructField(name = "Confidence", dataType = IntegerType, nullable = false),
+      StructField(name = "MentionDocLen", dataType = IntegerType, nullable = false),
+      StructField(name = "MentionDocTone", dataType = DoubleType, nullable = false),
+      StructField(name = "MentionDocTranslationInfo", dataType = StringType, nullable = true),
+      StructField(name = "Extras", dataType = StringType, nullable = true)
+    )
+  )
+
+Lecture des buckets S3 au format .CSV et non .zip
+
+val df_events = spark.read.options(Map("delimiter"->"\t")).schema(encoderSchemaEvent).csv("s3://rods3/[0-9]*.export.CSV")
+df_events.show(2, truncate=200, vertical=true)
+
+val df_mentions = spark.read.options(Map("delimiter"->"\t")).schema(encoderSchemaMention).csv("s3://rods3/[0-9]*.mentions.CSV")
+df_mentions.show(5, truncate=200, vertical=true)
+
+val df_gkg = spark.read.options(Map("delimiter"->"\t")).schema(encoderSchemaGkG).csv("s3://rods3/[0-9]*.gkg.csv")
+df_gkg.show(5, truncate=200, vertical=true)
+
+Allègement des dataframes en fonction des features identifiées comme utiles dans le use case (requêtes demandées)
+
+val df_events_light = df_events.select("GLOBALEVENTID","SQLDATE","MonthYear","Year","NumMentions","SOURCEURL","ActionGeo_CountryCode")
+df_events_light.show(2, truncate=400, vertical=true)
+
+val df_mentions_light = df_mentions.select("GLOBALEVENTID","MentionDocTranslationInfo")
+df_mentions_light.show(2, truncate=400, vertical=true)
+
+val df_gkg_light = df_gkg.select("GKGRECORDID","DATE","SourceCommonName","Themes","Locations","Persons","V2Tone")
+df_gkg_light.show(2, truncate=400, vertical=true)
+
+Transfert vers le cluster MongoDB Atlas
+
+Ecriture de 3 collections dans notre BD : Events, mentions et gkg, dans leur version light faite ci-dessus
+
+//MongoSpark.save(df_events_light.write.option("spark.mongodb.output.uri", "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.events?retryWrites=true&w=majority").mode("overwrite"))
+//MongoSpark.save(df_mentions_light.write.option("spark.mongodb.output.uri", "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.mentions?retryWrites=true&w=majority").mode("overwrite"))
+//MongoSpark.save(df_gkg_light.write.option("spark.mongodb.output.uri", "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.gkg?retryWrites=true&w=majority").mode("overwrite"))
+
+Lecture / requête de nos collections MongoDB allégées.
+
+2 jours de data ont été chargées : 495MB pour quota 500MB sur la version Atlas AWS
+
+On crée une Mongo ReadConfig qui pointe en lectures la collection souhaitée (.../DBtest/collection_souhaitée)
+
+val readConfigEvents = ReadConfig(Map("uri" ->  "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.events", "readPreference.name" -> "secondaryPreferred"))
+val readConfigMentions = ReadConfig(Map("uri" ->  "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.mentions", "readPreference.name" -> "secondaryPreferred"))
+val readConfigGkG = ReadConfig(Map("uri" ->  "mongodb+srv://admin:admin@cluster0.ldu6v.mongodb.net/DBtest.gkg", "readPreference.name" -> "secondaryPreferred"))
+
+On lit les collections du cluster Mongo Atlas avec la méthode load du connecteur MongoSpark.
+
+val dfE = MongoSpark.load(spark, readConfigEvents).cache
+dfE.show(2, truncate=400, vertical=true)
+
+val dfM = MongoSpark.load(spark, readConfigMentions).cache
+dfM.show(2, truncate=400, vertical=true)
+
+val dfG = MongoSpark.load(spark, readConfigGkG).cache
+dfM.show(2, truncate=400, vertical=true)
+
+Basics Spark Dataframes (pour mémoire)
+
+dfE.show(2, truncate = 62, vertical = true)
+dfE.printSchema
+
+println(s"Nombre de lignes : ${dfE.count}") 
+println(s"Nombre de colonnes : ${dfE.columns.length}")
+
+dfE.select("GLOBALEVENTID","SOURCEURL").show()
+
+dfE.filter(dfE("SOURCEURL").like("%covid%")).count
+
+dfE.filter(dfE("SOURCEURL").like("%COVID%")).count
+
+dfE.filter(dfE("SOURCEURL").like("%covid%"))
+    .groupBy("ActionGeo_CountryCode")
+    .count()
+    .sort(desc("count"))
+    .withColumnRenamed("count","nb_covid_papers")
+    .show()
+
+df_events.filter(df_events("SOURCEURL").like("%covid%"))
+    .groupBy("ActionGeo_CountryCode")
+    .count()
+    .sort(desc("count"))
+    .withColumnRenamed("count","nb_covid_papers")
+    .show()
+
+Réponses aux questions projet Furets
+
+Réponse à la question 1 "Afficher le nombre d’articles/évènements qui parlent de COVID qu’il y a eu pour chaque triplet (jour, pays de l’évènement, langue de l’article)""
+
+val question1 = dfE.join(dfM, dfE("GLOBALEVENTID")===dfM("GLOBALEVENTID"))
+        .filter(dfE("SOURCEURL").like("%covid%"))
+        .groupBy("SQLDATE","ActionGeo_CountryCode", "MentionDocTranslationInfo")
+        .count()
+        .sort(desc("SQLDATE"),desc("count"))
+        .withColumnRenamed("count","nb_covid_papers")
+        .show()
+
+Ci dessous la même requête mais avec TRI ASCENDANT sur la date pour vérifier que la requête ci-dessus affiche bien les deux journées!
+
+val question1suite = dfE.join(dfM, dfE("GLOBALEVENTID")===dfM("GLOBALEVENTID"))
+        .filter(dfE("SOURCEURL").like("%covid%"))
+        .groupBy("SQLDATE","ActionGeo_CountryCode", "MentionDocTranslationInfo")
+        .count()
+        .sort(asc("SQLDATE"),desc("count"))
+        .withColumnRenamed("count","nb_covid_papers")
+        .show()
+
+Variante avec SparkSQL
+
+//CI DESSOUS NOK java.lang.RuntimeException: Unable to instantiate org.apache.hadoop.hive.ql.metadata.SessionHiveMetaStoreClient;
+
+//dfE.createOrReplaceTempView("lesevents")
+//dfM.createOrReplaceTempView("lesmentions")
+
+//val centenarians = spark.sql("SELECT lesevents.SQLDATE, lesevents.ActionGeo_CountryCode, MentionDocTranslationInfo, count(*) as nb_refs_covid FROM lesevents, lesmentions WHERE (lesevents.SOURCEURL like '%COVID%' or lesevents.SOURCEURL like '%COVID%' ) and lesevents.GLOBALEVENTID=lesmentions.GLOBALEVENTID group by lesevents.SQLDATE, lesevents.ActionGeo_CountryCode, MentionDocTranslationInfo ORDER by nb_refs_covid")
+//centenarians.show()
+
+Question2 pour un pays donné en paramètre, affichez les évènements qui y ont eu place triées par le nombre de mentions (tri décroissant); permettez une agrégation par jour/mois/année
+
+val question2 = dfE
+        .select("NumMentions","SQLDATE","ActionGeo_CountryCode")
+        .filter(dfE("ActionGeo_CountryCode").like("%FR%"))
+        .groupBy("SQLDATE","ActionGeo_CountryCode")
+        .agg(sum("NumMentions"))
+        .withColumnRenamed("sum(NumMentions)","NbM")
+        .sort(desc("NbM"))
+
+question2.show()
+
+Solution MongoDB pipelines
+
+When using filters with DataFrames or Spark SQL, the underlying Mongo Connector code constructs an aggregation pipeline to filter the data in MongoDB before sending it to Spark. https://docs.mongodb.com/spark-connector/current/scala/datasets-and-sql
+
+dfE.filter(dfE("SOURCEURL").like("%covid%")).select(dfE("GLOBALEVENTID"),dfE("SOURCEURL")).show(5, truncate=400)
+
+Problème 1 : SparkSQL donne le message suivant :
+
+//CI DESSOUS NOK java.lang.RuntimeException: Unable to instantiate org.apache.hadoop.hive.ql.metadata.SessionHiveMetaStoreClient;
+
+dfE.createOrReplaceTempView("joinQ1")
+val centenarians = spark.sql("SELECT GLOBALEVENTID, SOURCEURL FROM lesevents WHERE (SOURCEURL like '%COVID%' or SOURCEURL like '%COVID%' )"
+
+)
+centenarians.show()
+
+Depending on the dataset, filtering data using MongoDB's aggregation framework may perform more efficiently than the direct use of RDD filters and dataset filters. https://docs.mongodb.com/spark-connector/current/scala/aggregation
+
+Aggregation
+
+Pass an aggregation pipeline to a MongoRDD instance to filter data and perform aggregations in MongoDB before passing documents to Spark. Aggregation pipelines handle null results whereas the filter methods do not. If the filter does not match any documents, the operation throws the following exception: ERROR Executor: Exception in task 0.0 in stage 1.0 (TID 8) java.lang.NullPointerException
+
+Exemple de pipeline (sans regex)
+
+val rdd = MongoSpark.load(sc, readConfigEvents)  // rdd est un MongoRDD, classe pour pipelines
+val mongoRddEvents = rdd.withPipeline(Seq(Document.parse("{ $match: { GoldsteinScale  : { $gt : 3 } } }")))
+println(mongoRddEvents.count)
+
+Le code ci-dessous est correct : pipeline avec regex.
+
+val rdd2 = MongoSpark.load(sc, readConfigEvents)  // rdd est un MongoRDD, classe pour pipelines
+val mongoRddEvents2 = rdd.withPipeline(Seq(Document.parse("{ $regexMatch: { input: '$SOURCEURL', regex: /covid/i } }")))
+println(aggregatedRdd2.count)
+
+Mais malheureusement dans la version de base de Atlas les regex ne sont pas autorisés ! Command failed with error 8000 (AtlasError): '$regexMatch is not allowed in this atlas tier' on server cluster0-shard-00-00.ldu6v.mongodb.net:27017.
+
+Question 3 pour une source de donnés passée en paramètre (gkg.SourceCommonName) affichez les thèmes, personnes, lieux dont les articles de cette sources parlent ainsi que le le nombre d’articles et le ton moyen des articles (pour chaque thème/personne/lieu); permettez une agrégation par jour/mois/année.
+
+val gkg_light2 = df_gkg.select("GKGRECORDID","DATE","SourceCommonName","Themes","V2Themes","Locations","V2Persons","Persons","V2Tone")
+gkg_light2.show()
+
+dfG.show()
+
+val gkg_light = dfG.select("GKGRECORDID","DATE","SourceCommonName","Themes","Locations","Persons","V2Tone")
+
+gkg_light.show()
+
+val gkg_2 = gkg_light.withColumn("avg_tone",substring_index($"V2Tone",",",1))
+                         .filter(!($"SourceCommonName" === ""))
+                         .withColumn("date",substring($"DATE",0,8).cast("Int"))
+                         .withColumn("persons_arr",split(gkg_light("Persons"),";"))
+                         .withColumn("locations_arr",split(gkg_light("Locations"),";"))
+                         .withColumn("themes_arr",split(gkg_light("themes"),";"))
+gkg_2.show()
+
+val gkg2_persons = gkg_2.select($"date",$"GKGRECORDID",$"SourceCommonName",$"avg_tone",explode_outer($"persons_arr").as("persons_2"))
+val gkg2_locations = gkg_2.select($"date",$"GKGRECORDID",$"SourceCommonName",$"avg_tone",explode_outer($"locations_arr").as("locations_2"))
+val gkg2_themes = gkg_2.select($"date",$"GKGRECORDID",$"SourceCommonName",$"avg_tone",explode_outer($"themes_arr").as("themes_2"))
+
+
+val requete3_persons = gkg2_persons
+    .groupBy("date","SourceCommonName","persons_2")
+    .agg(count($"GKGRECORDID").cast("int").as("nombre_articles"),avg($"avg_tone").as("ton_moyen"))
+val requete3_locations = gkg2_locations
+        .groupBy("date","SourceCommonName","locations_2")
+        .agg(count($"GKGRECORDID").cast("int").as("nombre_articles"),avg($"avg_tone").as("ton_moyen"))
+val requete3_themes = gkg2_themes
+    .groupBy("date","SourceCommonName","themes_2")
+    .agg(count($"GKGRECORDID").cast("int").as("nombre_articles"),avg($"avg_tone").as("ton_moyen"))
+
+requete3_persons.show()
+
+requete3_locations.show()
+
+requete3_themes.show()
+
