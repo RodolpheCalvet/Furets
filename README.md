@@ -6,9 +6,11 @@ Réalisé par
 # Obectif du projet
 
 http://andreiarion.github.io/projet2021.html
+
 http://andreiarion.github.io/Projet2021-intro.html#/data-cleanup-wranglingmunging
 
-Synthèse du process de ce projet
+# Synthèse du process de ce projet
+
 Le groupe a consolidé ses connaissances pratiques et théoriques dans l'approche NoSql en procédant comme suit:
 - Exploration de la création de compte AWS Student,
 - Revue des différents clusters exploitables (Spark + [ EMR, AWS MongoDB semi managé et AWS MongoDB Atlas fully managé, ou Cassandra]),
