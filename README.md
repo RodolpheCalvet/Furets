@@ -25,16 +25,15 @@ En temps restreint, les circonstances nous ont enjoint de d'abord :
 
 Les deux premières étapes suivantes nous ont permis de commencer à coder en Spark / scala, dans l'attente d'éclaircissements sur les difficultés liées aux compte AWS de la promo.
 
-- Ainsi la première instance fonctionnelle a été faite avec un Zeppelin sous Docker / Windows et MongoDB Atlas, solution fully managée de MongoDB hébergée chez AWS (les autres fournisseurs de cloud proposent aussi des clusters MongoDB, et cette solution est d'ailleurs la première à avoir développé un hébergement physique multi providers).. Rapidement des problèmes de dépendances et d'erreurs peu/pas loggées sont apparus.
+- Ainsi la première instance fonctionnelle a été faite avec un Zeppelin sous Docker / Windows et MongoDB Atlas, solution fully managée de MongoDB hébergée chez AWS (les autres fournisseurs de cloud proposent aussi des clusters MongoDB, et cette solution est d'ailleurs la première à avoir développé un hébergement physique multi providers).. Adaptation des dépendances de notre driver aux versions disponibles sur le cloud.
 
-- La deuxième instance fonctionnelle a été intelliJ (scala/sbt) et MongoDB Atlas. Ayant progressé plus loin, jusqu'à l'écriture des buckets s3, leur lecture a posé des problèmes d'accès insolubles : la version de Spark 3.0 ou une incompatibilité avec le Spark 2 de AWS pourrait être à l'origine de ce problème, comme du précédent.
+- La deuxième instance fonctionnelle a été intelliJ (scala/sbt) et MongoDB Atlas. Ayant progressé plus loin, jusqu'à l'écriture des buckets s3, leur lecture a posé des problèmes d'accès : il semble que la version de Spark 3.0 que nous avons utilisée reste difficilemnt compatible avec le Spark 2 de AWS.
 
 Par la suite des soucis de portabilité du code IntelliJ sur notebook jupyter et zeppelin sont encore apparus : Nous avons donc concentré nos efforts, dans un troisième temps, sur le déploiement d'un cluster EMR dans le but d'accéder au notebook zeppelin associé (sans autre utilisation du cluster à proprement parler).
 C'est là que nous avons pu commencer à coder ensemble avec un environnement commun.
 
 Après écriture sur MongoDB et un premier travail sur les datas, nous avons donc testé notre code sur le cluster Atlas avec satisfaction.
 Nous avons effectué les requêtes demandées avec 500MB de quota cluster (2 jours de data events, mentions et gkg).
-Mais cette solution temporaire, bien qu'excellente en ce qu'elle nous a permis de travailler et de répondre aux questions posées, s'est avérée définitve, dans le mesure où nous n'avons finalement pas réussi à déployer à un cluster semi-managé MongoDB sur AWS.
 
 Ainsi après réussite à cette étape, les points suivants seraient rendus possibles : 
 - D'abord, comme évoqué lors de la soutenance, un retour sur les choix d'écriture sur la DB avec, cette fois, des dataframes issus des requêtes et non des tables complètes issues des CSV s3 même simplifiés en schémas,
