@@ -19,7 +19,7 @@ Le groupe a consolidé ses connaissances pratiques et théoriques dans l'approch
 - Revue des outils de développements adaptés : Jupyter nb et Zeppelin nb adossés à EMR, IDE IntelliJ scala/sbt installé sur machines de TP ou linux perso (install windows réputée difficile à ce jour),
 - Revue des langages utilisables (Python avec PySpark ou Scala).
 
-En temps restreint, les circonstances nous on enjoints de d'abord :
+En temps restreint, les circonstances nous ont enjoint de d'abord :
 - lancer un code client élémentaire fonctionnel,
 - configurer en local ou à distance une instance Spark a minima pour valider le code et la prise en main des outils.
 
